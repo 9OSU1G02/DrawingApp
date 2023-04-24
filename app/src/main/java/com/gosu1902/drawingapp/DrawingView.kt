@@ -21,7 +21,7 @@ class DrawingView(context: Context, attrs: AttributeSet) : View(context, attrs) 
     private var mCanvas: Canvas? = null
 
     private var mPaths = ArrayList<CustomPath>()
-
+    private val mUndoPaths = ArrayList<CustomPath>()
     init {
         setupDrawing()
     }
@@ -86,7 +86,12 @@ class DrawingView(context: Context, attrs: AttributeSet) : View(context, attrs) 
         invalidate()
         return true
     }
-
+    fun onClickUndo() {
+        if(mPaths.size>0) {
+            mUndoPaths.add(mPaths.removeAt(mPaths.size-1))
+            invalidate()
+        }
+    }
     fun setSizeForBrush(newSize: Float) {
         mBrushSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, newSize, resources.displayMetrics)
         mDrawPaint!!.strokeWidth = mBrushSize

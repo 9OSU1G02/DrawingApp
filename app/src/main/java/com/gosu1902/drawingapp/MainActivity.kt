@@ -1,17 +1,61 @@
 package com.gosu1902.drawingapp
 
+import android.Manifest
+import android.app.AlertDialog
 import android.app.Dialog
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.media.MediaScannerConnection
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.get
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
     private var drawingView: DrawingView? = null
     private var mImageButtonCurrentPaint: ImageButton? = null
+    private val openGalleryLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            val imageBackground: ImageView = findViewById(R.id.iv_background)
+            imageBackground.setImageURI(result.data?.data)
+        }
+    }
+    private val requestPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+        permissions.entries.forEach {
+            val permissionName = it.key
+            val isGranted = it.value
+            if (isGranted) {
+                Toast.makeText(this@MainActivity, "Permission granted ", Toast.LENGTH_LONG).show()
+                val pickIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                openGalleryLauncher.launch(pickIntent)
+            } else {
+                if (permissionName == Manifest.permission.READ_MEDIA_IMAGES) {
+                    Toast.makeText(this, "Permission denied ", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -26,6 +70,72 @@ class MainActivity : AppCompatActivity() {
         ibBrush.setOnClickListener {
             showBrushSizeChooserDialog()
         }
+        val ibGallery: ImageButton = findViewById(R.id.ib_gallery)
+        ibGallery.setOnClickListener {
+            requestStoragePermission()
+        }
+
+        val idUndo: ImageButton = findViewById(R.id.ib_undo)
+        idUndo.setOnClickListener {
+            drawingView?.onClickUndo()
+        }
+
+        val ibSave: ImageButton = findViewById(R.id.ib_save)
+        ibSave.setOnClickListener {
+            if (isReadStorageAllowed()) {
+                lifecycleScope.launch {
+                    val flDrawingView = findViewById<FrameLayout>(R.id.fl_drawing_view_container)
+                    saveBitmapFile(getBitMapFromView(flDrawingView))
+                }
+            }
+        }
+    }
+
+    private fun isReadStorageAllowed(): Boolean {
+        val result = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
+        return result == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun getBitMapFromView(view: View): Bitmap {
+        val returnedBitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(returnedBitmap)
+        val bgDrawable = view.background
+        if (bgDrawable != null) {
+            bgDrawable.draw(canvas)
+        } else {
+            canvas.drawColor(Color.WHITE)
+        }
+        view.draw(canvas)
+        return returnedBitmap
+    }
+
+    private suspend fun saveBitmapFile(mBitmap: Bitmap): String {
+        var result = ""
+        withContext(Dispatchers.IO) {
+            if (mBitmap != null) {
+                try {
+                    val bytes = ByteArrayOutputStream()
+                    mBitmap.compress(Bitmap.CompressFormat.PNG, 90, bytes)
+                    val f = File(externalCacheDir?.absoluteFile.toString() + File.separator + "DrawingApp_" + System.currentTimeMillis())
+                    val fo = FileOutputStream(f)
+                    fo.write(bytes.toByteArray())
+                    fo.close()
+                    runOnUiThread {
+                        if (result.isNotEmpty()) {
+                            Toast.makeText(this@MainActivity, "File saved successfully: $result", Toast.LENGTH_LONG).show()
+                            shareImage(result)
+                        } else {
+                            Toast.makeText(this@MainActivity, "Something went wrong while saving the file: $result", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    result = ""
+                    e.printStackTrace()
+                }
+            }
+        }
+
+        return result
     }
 
     private fun showBrushSizeChooserDialog() {
@@ -52,6 +162,14 @@ class MainActivity : AppCompatActivity() {
         brushDialog.show()
     }
 
+    private fun requestStoragePermission() {
+        if (ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.READ_MEDIA_IMAGES)) {
+            showRationalDialog("Drawing App", "Need to access your image")
+        } else {
+            requestPermission.launch(arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE))
+        }
+    }
+
     fun paintClicked(view: View) {
         if (view !== mImageButtonCurrentPaint) {
             val imageButton = view as ImageButton
@@ -64,6 +182,24 @@ class MainActivity : AppCompatActivity() {
                 ContextCompat.getDrawable(this, R.drawable.pallet_normal)
             )
             mImageButtonCurrentPaint = view
+        }
+    }
+
+    private fun showRationalDialog(title: String, message: String) {
+        val builder: AlertDialog.Builder = AlertDialog.Builder(this)
+        builder.setTitle(title).setMessage(message).setPositiveButton("Cancel") { dialog, _ ->
+            dialog.dismiss()
+        }
+        builder.create().show()
+    }
+
+    private fun shareImage(result: String) {
+        MediaScannerConnection.scanFile(this, arrayOf(result), null) { path, uri ->
+            val shareIntent = Intent()
+            shareIntent.action = Intent.ACTION_SEND
+            shareIntent.putExtra(Intent.EXTRA_STREAM, uri)
+            shareIntent.type = "image/png"
+            startActivity(Intent.createChooser(shareIntent, "Share"))
         }
     }
 }
